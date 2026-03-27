@@ -651,9 +651,12 @@ class GitHubAPI {
   async getRef(): Promise<string> {
     const data = await this.request(
       "GET",
-      `/repos/${this.owner}/${this.repo}/git/ref/heads/${encodeURIComponent(this.branch)}`
+      `/repos/${this.owner}/${this.repo}/git/refs/heads/${encodeURIComponent(this.branch)}`
     );
-    return data.object.sha;
+    // GitHub returns an object; Gitea returns an array
+    const ref = Array.isArray(data) ? data[0] : data;
+    if (!ref?.object?.sha) throw new Error(`Ref not found for branch ${this.branch}`);
+    return ref.object.sha;
   }
 
   async getCommit(sha: string): Promise<{ treeSha: string }> {
