@@ -798,11 +798,29 @@ class GitHubAPI {
 
     // Truly empty repo (or couldn't get SHA from existing branches).
     // Create the very first commit without specifying a branch — Gitea uses default_branch.
+    // Try several filenames in case a previous partial sync left a stale git object.
     console.log("[LM] createBranchFromExisting: creating initial commit on default branch");
-    await this.request("PUT", `/repos/${this.owner}/${this.repo}/contents/.gitkeep`, {
-      message: "Initialize repository",
-      content: btoa("\n"),
-    });
+    const candidateFiles = [".gitkeep", ".quilden-init", ".quilden-sync"];
+    let initOk = false;
+    for (const fname of candidateFiles) {
+      try {
+        await this.request("PUT", `/repos/${this.owner}/${this.repo}/contents/${fname}`, {
+          message: "Initialize repository",
+          content: btoa("\n"),
+        });
+        console.log(`[LM] createBranchFromExisting: initial commit created via ${fname}`);
+        initOk = true;
+        break;
+      } catch (e: any) {
+        const msg = e?.message ?? "";
+        if (msg.includes("422") || msg.includes("SHA") || msg.includes("sha")) {
+          console.log(`[LM] createBranchFromExisting: ${fname} already exists (stale object), trying next`);
+          continue;
+        }
+        throw e;
+      }
+    }
+    if (!initOk) throw new Error("Cannot initialize repo: all candidate filenames blocked by stale git objects. Delete and recreate the Gitea repo, then try again.");
 
     // If the newly created branch ≠ our target, create a ref from it.
     if (defaultBranch !== this.branch) {
