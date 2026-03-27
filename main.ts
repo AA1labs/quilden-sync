@@ -649,14 +649,15 @@ class GitHubAPI {
   }
 
   async getRef(): Promise<string> {
+    // Use the branches API — more reliable than /git/refs/heads/ across providers.
+    // GitHub returns { commit: { sha } }, Gitea returns { commit: { id } }.
     const data = await this.request(
       "GET",
-      `/repos/${this.owner}/${this.repo}/git/refs/heads/${encodeURIComponent(this.branch)}`
+      `/repos/${this.owner}/${this.repo}/branches/${encodeURIComponent(this.branch)}`
     );
-    // GitHub returns an object; Gitea returns an array
-    const ref = Array.isArray(data) ? data[0] : data;
-    if (!ref?.object?.sha) throw new Error(`Ref not found for branch ${this.branch}`);
-    return ref.object.sha;
+    const sha = data?.commit?.sha ?? data?.commit?.id;
+    if (!sha) throw new Error(`Ref not found for branch ${this.branch}`);
+    return sha;
   }
 
   async getCommit(sha: string): Promise<{ treeSha: string }> {
@@ -729,21 +730,22 @@ class GitHubAPI {
    */
   async initializeRepo(): Promise<void> {
     try {
-      // Try creating the placeholder on the target branch
+      // Commit .gitkeep directly to the target branch.
+      // Using `branch` (not `new_branch`) avoids 422 when the branch already exists.
       await this.request(
         "PUT",
         `/repos/${this.owner}/${this.repo}/contents/.gitkeep`,
         {
           message: "Initialize repository",
           content: btoa(""),
-          new_branch: this.branch,
+          branch: this.branch,
         },
       );
     } catch (e: any) {
       const msg = e?.message ?? "";
       if (msg.includes("422") || msg.includes("SHA") || msg.includes("sha")) {
-        // File already exists on this branch — repo is already initialized, continue
-        console.log("[LM] initializeRepo: placeholder already exists, repo already initialized");
+        // File already exists — branch is already initialized, continue
+        console.log("[LM] initializeRepo: placeholder already exists, branch already initialized");
         return;
       }
       throw e;
