@@ -754,16 +754,42 @@ class GitHubAPI {
     }
   }
 
-  /** Creates `this.branch` from the first existing branch in the repo. */
+  /** Creates `this.branch` ensuring the repo has at least one commit first. */
   private async createBranchFromExisting(): Promise<void> {
     const branches = await this.request("GET", `/repos/${this.owner}/${this.repo}/branches`);
     const source: string | undefined = Array.isArray(branches) ? branches[0]?.name : undefined;
-    if (!source) throw new Error("Cannot initialize: no existing branches to branch from");
+
+    if (!source) {
+      // Truly empty repo — no commits at all. Create the initial commit without
+      // specifying a branch so Gitea uses its configured default_branch setting.
+      console.log("[LM] createBranchFromExisting: truly empty repo, creating initial commit without branch");
+      await this.request("PUT", `/repos/${this.owner}/${this.repo}/contents/.gitkeep`, {
+        message: "Initialize repository",
+        content: btoa("\n"),
+        // No `branch` param — Gitea defaults to the repo's configured default branch
+      });
+
+      // If the default branch is not our target, create a ref pointing to the new commit.
+      const repoInfo = await this.request("GET", `/repos/${this.owner}/${this.repo}`);
+      const defaultBranch: string = repoInfo?.default_branch ?? "master";
+      console.log(`[LM] createBranchFromExisting: default_branch=${defaultBranch}, target=${this.branch}`);
+      if (defaultBranch !== this.branch) {
+        const defData = await this.request("GET", `/repos/${this.owner}/${this.repo}/branches/${defaultBranch}`);
+        const sha = defData?.commit?.sha ?? defData?.commit?.id;
+        if (!sha) throw new Error(`Cannot get SHA for default branch ${defaultBranch}`);
+        await this.request("POST", `/repos/${this.owner}/${this.repo}/git/refs`, {
+          ref: `refs/heads/${this.branch}`,
+          sha,
+        });
+      }
+      return;
+    }
+
+    // Repo has at least one branch — create our branch from it.
     const sourceData = await this.request("GET", `/repos/${this.owner}/${this.repo}/branches/${source}`);
     const sha = sourceData?.commit?.sha ?? sourceData?.commit?.id;
     if (!sha) throw new Error(`Cannot get SHA for branch ${source}`);
     console.log(`[LM] createBranchFromExisting: branching ${this.branch} from ${source} @ ${sha.slice(0, 7)}`);
-    // POST /git/refs is supported by both GitHub and Gitea
     await this.request("POST", `/repos/${this.owner}/${this.repo}/git/refs`, {
       ref: `refs/heads/${this.branch}`,
       sha,
