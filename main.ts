@@ -756,44 +756,64 @@ class GitHubAPI {
 
   /** Creates `this.branch` ensuring the repo has at least one commit first. */
   private async createBranchFromExisting(): Promise<void> {
-    const branches = await this.request("GET", `/repos/${this.owner}/${this.repo}/branches`);
-    const source: string | undefined = Array.isArray(branches) ? branches[0]?.name : undefined;
+    // Use repo info to understand actual state — more reliable than GET /branches
+    const repoInfo = await this.request("GET", `/repos/${this.owner}/${this.repo}`);
+    const defaultBranch: string = repoInfo?.default_branch ?? "master";
+    const repoEmpty: boolean = repoInfo?.empty === true;
+    console.log(`[LM] createBranchFromExisting: default_branch=${defaultBranch}, empty=${repoEmpty}, target=${this.branch}`);
 
-    if (!source) {
-      // Truly empty repo — no commits at all. Create the initial commit without
-      // specifying a branch so Gitea uses its configured default_branch setting.
-      console.log("[LM] createBranchFromExisting: truly empty repo, creating initial commit without branch");
-      await this.request("PUT", `/repos/${this.owner}/${this.repo}/contents/.gitkeep`, {
-        message: "Initialize repository",
-        content: btoa("\n"),
-        // No `branch` param — Gitea defaults to the repo's configured default branch
-      });
-
-      // If the default branch is not our target, create a ref pointing to the new commit.
-      const repoInfo = await this.request("GET", `/repos/${this.owner}/${this.repo}`);
-      const defaultBranch: string = repoInfo?.default_branch ?? "master";
-      console.log(`[LM] createBranchFromExisting: default_branch=${defaultBranch}, target=${this.branch}`);
-      if (defaultBranch !== this.branch) {
+    if (!repoEmpty) {
+      // Repo has commits. Get SHA from the default branch and create our target from it.
+      try {
         const defData = await this.request("GET", `/repos/${this.owner}/${this.repo}/branches/${defaultBranch}`);
         const sha = defData?.commit?.sha ?? defData?.commit?.id;
-        if (!sha) throw new Error(`Cannot get SHA for default branch ${defaultBranch}`);
+        if (!sha) throw new Error("no SHA in branch data");
+        console.log(`[LM] createBranchFromExisting: creating ${this.branch} from ${defaultBranch} @ ${sha.slice(0, 7)}`);
         await this.request("POST", `/repos/${this.owner}/${this.repo}/git/refs`, {
           ref: `refs/heads/${this.branch}`,
           sha,
         });
+        return;
+      } catch (e: any) {
+        console.warn(`[LM] createBranchFromExisting: failed to branch from ${defaultBranch}: ${e?.message}`);
       }
-      return;
+
+      // Fallback: list all git refs and use the first commit SHA we find
+      try {
+        const refs = await this.request("GET", `/repos/${this.owner}/${this.repo}/git/refs`);
+        console.log(`[LM] createBranchFromExisting: git/refs = ${JSON.stringify(refs)?.slice(0, 300)}`);
+        const firstRef = Array.isArray(refs) ? refs[0] : null;
+        const sha = firstRef?.object?.sha;
+        if (sha) {
+          await this.request("POST", `/repos/${this.owner}/${this.repo}/git/refs`, {
+            ref: `refs/heads/${this.branch}`,
+            sha,
+          });
+          return;
+        }
+      } catch (e: any) {
+        console.warn(`[LM] createBranchFromExisting: git/refs fallback failed: ${e?.message}`);
+      }
     }
 
-    // Repo has at least one branch — create our branch from it.
-    const sourceData = await this.request("GET", `/repos/${this.owner}/${this.repo}/branches/${source}`);
-    const sha = sourceData?.commit?.sha ?? sourceData?.commit?.id;
-    if (!sha) throw new Error(`Cannot get SHA for branch ${source}`);
-    console.log(`[LM] createBranchFromExisting: branching ${this.branch} from ${source} @ ${sha.slice(0, 7)}`);
-    await this.request("POST", `/repos/${this.owner}/${this.repo}/git/refs`, {
-      ref: `refs/heads/${this.branch}`,
-      sha,
+    // Truly empty repo (or couldn't get SHA from existing branches).
+    // Create the very first commit without specifying a branch — Gitea uses default_branch.
+    console.log("[LM] createBranchFromExisting: creating initial commit on default branch");
+    await this.request("PUT", `/repos/${this.owner}/${this.repo}/contents/.gitkeep`, {
+      message: "Initialize repository",
+      content: btoa("\n"),
     });
+
+    // If the newly created branch ≠ our target, create a ref from it.
+    if (defaultBranch !== this.branch) {
+      const defData = await this.request("GET", `/repos/${this.owner}/${this.repo}/branches/${defaultBranch}`);
+      const sha = defData?.commit?.sha ?? defData?.commit?.id;
+      if (!sha) throw new Error(`Cannot get SHA after initial commit on ${defaultBranch}`);
+      await this.request("POST", `/repos/${this.owner}/${this.repo}/git/refs`, {
+        ref: `refs/heads/${this.branch}`,
+        sha,
+      });
+    }
   }
 
   async getFileCommits(path: string): Promise<Array<{ sha: string; parentSha: string | null; message: string; author: string; date: string }>> {
