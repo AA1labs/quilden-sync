@@ -731,25 +731,43 @@ class GitHubAPI {
   async initializeRepo(): Promise<void> {
     try {
       // Commit .gitkeep directly to the target branch.
-      // Using `branch` (not `new_branch`) avoids 422 when the branch already exists.
-      await this.request(
-        "PUT",
-        `/repos/${this.owner}/${this.repo}/contents/.gitkeep`,
-        {
-          message: "Initialize repository",
-          content: btoa(""),
-          branch: this.branch,
-        },
-      );
+      await this.request("PUT", `/repos/${this.owner}/${this.repo}/contents/.gitkeep`, {
+        message: "Initialize repository",
+        content: btoa(""),
+        branch: this.branch,
+      });
+      return; // success
     } catch (e: any) {
       const msg = e?.message ?? "";
+      // 422 [SHA]: Required → file already exists on some branch (Gitea falls back to
+      // default branch when the specified branch doesn't exist).
       if (msg.includes("422") || msg.includes("SHA") || msg.includes("sha")) {
-        // File already exists — branch is already initialized, continue
-        console.log("[LM] initializeRepo: placeholder already exists, branch already initialized");
+        // Check if our target branch now exists (happy path)
+        try { await this.getRef(); console.log("[LM] initializeRepo: branch already initialized"); return; } catch {}
+        // Branch still doesn't exist — .gitkeep lives on a different branch (e.g. master).
+        // Create our branch from whatever branch already has a commit.
+        console.log("[LM] initializeRepo: .gitkeep on different branch — creating target branch");
+        await this.createBranchFromExisting();
         return;
       }
       throw e;
     }
+  }
+
+  /** Creates `this.branch` from the first existing branch in the repo. */
+  private async createBranchFromExisting(): Promise<void> {
+    const branches = await this.request("GET", `/repos/${this.owner}/${this.repo}/branches`);
+    const source: string | undefined = Array.isArray(branches) ? branches[0]?.name : undefined;
+    if (!source) throw new Error("Cannot initialize: no existing branches to branch from");
+    const sourceData = await this.request("GET", `/repos/${this.owner}/${this.repo}/branches/${source}`);
+    const sha = sourceData?.commit?.sha ?? sourceData?.commit?.id;
+    if (!sha) throw new Error(`Cannot get SHA for branch ${source}`);
+    console.log(`[LM] createBranchFromExisting: branching ${this.branch} from ${source} @ ${sha.slice(0, 7)}`);
+    // POST /git/refs is supported by both GitHub and Gitea
+    await this.request("POST", `/repos/${this.owner}/${this.repo}/git/refs`, {
+      ref: `refs/heads/${this.branch}`,
+      sha,
+    });
   }
 
   async getFileCommits(path: string): Promise<Array<{ sha: string; parentSha: string | null; message: string; author: string; date: string }>> {
