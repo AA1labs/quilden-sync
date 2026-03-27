@@ -722,22 +722,29 @@ class GitHubAPI {
   /**
    * Initialize an empty repo via the Contents API (works before the Git Data API is available).
    * Creates a placeholder commit so subsequent Git Data API calls succeed.
-   * Returns the SHA of the new HEAD commit.
+   * Idempotent: if the placeholder already exists (previous failed sync), fetches its SHA and updates it.
    */
-  async initializeRepo(): Promise<string> {
-    // PUT /repos/{owner}/{repo}/contents/{path} creates the file and the initial commit
-    const data = await this.request(
-      "PUT",
-      `/repos/${this.owner}/${this.repo}/contents/.gitkeep`,
-      {
-        message: "Initialize repository",
-        content: btoa(""), // empty file, base64-encoded
-        branch: this.branch,
-        new_branch: this.branch,
-      },
-    );
-    // Both GitHub and Gitea return { commit: { sha: "..." } }
-    return data.commit?.sha ?? data.sha;
+  async initializeRepo(): Promise<void> {
+    try {
+      // Try creating the placeholder on the target branch
+      await this.request(
+        "PUT",
+        `/repos/${this.owner}/${this.repo}/contents/.gitkeep`,
+        {
+          message: "Initialize repository",
+          content: btoa(""),
+          new_branch: this.branch,
+        },
+      );
+    } catch (e: any) {
+      const msg = e?.message ?? "";
+      if (msg.includes("422") || msg.includes("SHA") || msg.includes("sha")) {
+        // File already exists on this branch — repo is already initialized, continue
+        console.log("[LM] initializeRepo: placeholder already exists, repo already initialized");
+        return;
+      }
+      throw e;
+    }
   }
 
   async getFileCommits(path: string): Promise<Array<{ sha: string; parentSha: string | null; message: string; author: string; date: string }>> {
