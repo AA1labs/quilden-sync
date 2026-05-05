@@ -1,7 +1,7 @@
 {
   "id": "quilden-sync",
   "name": "Quilden Sync",
-  "version": "1.1.9",
+  "version": "1.1.10",
   "minAppVersion": "1.0.0",
   "description": "Sync your Obsidian vault with Quilden via GitHub. Supports end-to-end encryption.",
   "author": "Quilden",

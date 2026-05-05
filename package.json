@@ -1,6 +1,6 @@
 {
   "name": "quilden-sync",
-  "version": "1.1.4",
+  "version": "1.1.10",
   "description": "Sync Obsidian vault with Quilden via GitHub",
   "main": "main.js",
   "scripts": {
